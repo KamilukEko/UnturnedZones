@@ -1,6 +1,7 @@
 ﻿using System;
 using fr34kyn01535.Uconomy;
 using ImperialPlugins.AdvancedRegions;
+using Rocket.Core.Logging;
 using Rocket.Unturned.Chat;
 using SDG.Unturned;
 using Steamworks;
@@ -11,21 +12,22 @@ namespace Zones.Models
     {
         public readonly ZoneInfo ZoneInfo;
         private float _payoutTime;
-        
-        public bool UnderAttack;
-        private int _zonePoints;
+
+        private bool _underAttack;
+        private long _zonePoints;
         private uint _defenders;
         private uint _attackers;
         private CSteamID _attackingGroupID;
 
-        protected internal Zone(ZoneInfo zoneInfo)
+        public Zone(ZoneInfo zoneInfo)
         {
             ZoneInfo = zoneInfo;
+            _zonePoints = ZoneInfo.MaxZonePoints;
         }
-        private void UpdateZonePoints(long newValue)
+        private void UpdateUI(long newValue)
         {
-            string text = new string('|', 224 * ZoneInfo.MaxZonePoints / _zonePoints);
-            
+            string text = new string('|', (int)(224 * (ZoneInfo.MaxZonePoints - newValue) / ZoneInfo.MaxZonePoints));
+
             foreach (var player in AdvancedRegionsPlugin.Instance.RegionsManager.GetRegion(ZoneInfo.RegionName).Players)
             {
                 if (newValue == 0)
@@ -42,9 +44,7 @@ namespace Zones.Models
 
         public void Update(float interval)
         {
-            _payoutTime -= interval;
-
-            if (UnderAttack)
+            if (_underAttack)
             {
                 long newZonePoints;
                 
@@ -57,8 +57,8 @@ namespace Zones.Models
                         _zonePoints = ZoneInfo.MaxZonePoints;
                         _attackers = 0;
                         _defenders = 0;
-                        UnderAttack = false;
-                        UpdateZonePoints(0);
+                        _underAttack = false;
+                        UpdateUI(0);
                         ChangeOwnerGroup(_attackingGroupID);
                         return;
                     }
@@ -72,19 +72,25 @@ namespace Zones.Models
                         _zonePoints = ZoneInfo.MaxZonePoints;
                         _attackers = 0;
                         _defenders = 0;
-                        UnderAttack = false;
-                        UpdateZonePoints(0);
-                        SendMessageToGroup(_attackingGroupID, $"Twoja grupa przegrała walkę o strefę {ZoneInfo.RegionName} :(");
-                        SendMessageToGroup(new CSteamID(ZoneInfo.GroupID), $"Twoja grupa obroniła strefę {ZoneInfo.RegionName} :)");
+                        _underAttack = false;
+                        UpdateUI(0);
+                        SendMessageToGroup(_attackingGroupID, $"Twoja grupa przegrała walkę o strefę {ZoneInfo.RegionName}");
+                        SendMessageToGroup(new CSteamID(ZoneInfo.GroupID), $"Twoja grupa obroniła strefę {ZoneInfo.RegionName}");
                         return;
                     }
                 }
-                
-                UpdateZonePoints(newZonePoints);
+
+                _zonePoints = newZonePoints;
+                UpdateUI(newZonePoints);
                 return;
             }
             
-            if (ZoneInfo.MinHourActive < DateTime.Now.Hour || ZoneInfo.MaxHourActive > DateTime.Now.Hour)
+            if (ZoneInfo.PayoutValue == 0)
+                return;
+            
+            _payoutTime -= interval;
+
+            if (ZoneInfo.MinHourActive >= DateTime.Now.Hour || ZoneInfo.MaxHourActive <= DateTime.Now.Hour)
                 return;
 
             if (_payoutTime > 0)
@@ -93,7 +99,7 @@ namespace Zones.Models
             foreach (var groupMember in Utils.GetGroupMembers(new CSteamID(ZoneInfo.GroupID)))
             {
                 Uconomy.Instance.Database.IncreaseBalance(groupMember.Id, ZoneInfo.PayoutValue);
-                UnturnedChat.Say(groupMember.CSteamID, $"Zyskałeś {ZoneInfo.PayoutValue} dzięki strefie - {ZoneInfo.RegionName} :)");
+                UnturnedChat.Say(groupMember.CSteamID, $"Zyskałeś {ZoneInfo.PayoutValue} dzięki strefie - {ZoneInfo.RegionName}");
             }
             
             _payoutTime = ZoneInfo.PayoutInterval;
@@ -112,11 +118,11 @@ namespace Zones.Models
             }
 
             Main.Instance.Configuration.Instance.Zones.Remove(ZoneInfo);
-            ZoneInfo.GroupID = _attackingGroupID.m_SteamID;
+            ZoneInfo.GroupID = newOwnerGroupID.m_SteamID;
             Main.Instance.Configuration.Instance.Zones.Add(ZoneInfo);
             Main.Instance.Configuration.Save();
 
-            foreach (var groupMember in Utils.GetGroupMembers(_attackingGroupID))
+            foreach (var groupMember in Utils.GetGroupMembers(newOwnerGroupID))
             {
                 foreach (var questFlag in ZoneInfo.QuestFlags)
                 {
@@ -138,7 +144,7 @@ namespace Zones.Models
         public void Attack(Player player)
         {
             _attackingGroupID = player.quests.groupID;
-            UnderAttack = true;
+            _underAttack = true;
 
             foreach (var playerInRegion in AdvancedRegionsPlugin.Instance.RegionsManager.GetRegion(ZoneInfo.RegionName).Players)
             {
@@ -147,21 +153,53 @@ namespace Zones.Models
 
                 if (playerInRegion.quests.isMemberOfGroup(new CSteamID(ZoneInfo.GroupID)))
                     _defenders += 1;
+                
+                EffectManager.sendUIEffect(21370, 2137, player.channel.GetOwnerTransportConnection(), true,
+                    _attackers.ToString(), _defenders.ToString(), "");
+                EffectManager.sendUIEffectText(2137, player.channel.GetOwnerTransportConnection(), true, "{2}", "");
             }
             
+            
             SendMessageToGroup(_attackingGroupID, $"Twoja grupa rozpoczeła atak na strefę - {ZoneInfo.RegionName}");
-            SendMessageToGroup(new CSteamID(ZoneInfo.GroupID), $"Rozpoczął się atak na twoją strefę - {ZoneInfo.RegionName}");
+            foreach (var groupMember in Utils.GetGroupMembers(new CSteamID(ZoneInfo.GroupID)))
+            {
+                EffectManager.sendEffect(Main.Instance.Configuration.Instance.ZoneAttackNotificationEffectID,
+                    groupMember.CSteamID, groupMember.Position);
+                UnturnedChat.Say(groupMember.CSteamID, $"Rozpoczął się atak na twoją strefę - {ZoneInfo.RegionName}");
+            }
         }
         
         public void OnPlayerEntered(Player player)
         {
-            if (!UnderAttack)
-                return;
+            if (!_underAttack)
+            {
+                if (!player.quests.isMemberOfAGroup)
+                {
+                    UnturnedChat.Say(player.channel.owner.playerID.steamID, "Musisz być członkiem grupy aby zaatakować strefę");
+                    return;
+                }
             
-            string text = new string('|', 224 * _zonePoints / ZoneInfo.MaxZonePoints);
+                if (ZoneInfo.GroupID == player.quests.groupID.m_SteamID)
+                {
+                    UnturnedChat.Say(player.channel.owner.playerID.steamID, "Wchodzisz na teren własnej strefy");
+                    return;
+                }
+
+                if (ZoneInfo.MinHourActive >= DateTime.Now.Hour || ZoneInfo.MaxHourActive <= DateTime.Now.Hour)
+                {
+                    UnturnedChat.Say(player.channel.owner.playerID.steamID, $"Ta strefa jest aktywna w godzinach {ZoneInfo.MinHourActive}-{ZoneInfo.MaxHourActive}.");
+                    return;
+                }
+
+                Attack(player);
+                return;
+            }
+
+            string text = new string('|', (int)(224 * (ZoneInfo.MaxZonePoints - _zonePoints) / ZoneInfo.MaxZonePoints));
             EffectManager.askEffectClearByID(21370, player.channel.GetOwnerTransportConnection());
             EffectManager.sendUIEffect(21370, 2137, player.channel.GetOwnerTransportConnection(), true,
                 _attackers.ToString(), _defenders.ToString(), text);
+            EffectManager.sendUIEffectText(2137, player.channel.GetOwnerTransportConnection(), true, "{2}", text);
 
             if (player.quests.isMemberOfGroup(_attackingGroupID))
             {
@@ -170,14 +208,19 @@ namespace Zones.Models
             }
             
             if (player.quests.isMemberOfGroup(new CSteamID(ZoneInfo.GroupID)))
+            {
                 _defenders += 1;
+                return;
+            }
+            
+            UnturnedChat.Say(player.channel.owner.playerID.steamID, "Ta strefa jest przejmowana przez inną grupę.");
         }
         
         public void OnPlayerLeft(Player player)
         {
-            if (!UnderAttack)
+            if (!_underAttack)
                 return;
-            
+          
             EffectManager.askEffectClearByID(21370, player.channel.GetOwnerTransportConnection());
             
             if (player.quests.isMemberOfGroup(_attackingGroupID))

@@ -1,7 +1,7 @@
-﻿using System.Collections;
+﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using ImperialPlugins.AdvancedRegions;
 using Rocket.Core.Plugins;
 using Rocket.Unturned;
 using Rocket.Unturned.Chat;
@@ -15,50 +15,58 @@ namespace Zones
 {
     public class Main: RocketPlugin<Config>
     {
-        public List<Zone> Zones;
+        private List<Zone> _zones;
+        private IEnumerator _updateCoroutine;
         public static Main Instance;
-        
         protected override void Load()
         {
             Instance = this;
-
+            _zones = new List<Zone>();
+            
             foreach (var zone in Configuration.Instance.Zones)
             {
-                Zones.Add(new Zone(zone));
+                _zones.Add(new Zone(zone));
             }
             
             U.Events.OnPlayerConnected += OnPlayerConnected;
-            U.Events.OnPlayerDisconnected += OnPlayerDisconnected;
-            AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerLeaveRegion += OnPlayerLeaveRegion;
-            AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerEnterRegion += OnPlayerEnterRegion;
-            
-            StartCoroutine(nameof(UpdateCoroutine), Configuration.Instance.GlobalUpdateInterval);
+            _updateCoroutine = UpdateCoroutine(Configuration.Instance.GlobalUpdateInterval);
+            StartCoroutine(_updateCoroutine);
             
             Logger.Log("Kamiluk || Zones plugin has been loaded.");
+        }
+
+        private void OnLevelWasLoaded(int level)
+        {
+            ImperialPlugins.AdvancedRegions.AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerLeaveRegion +=
+                OnPlayerLeaveRegion;
+            ImperialPlugins.AdvancedRegions.AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerEnterRegion +=
+                OnPlayerEnterRegion;
         }
 
         protected override void Unload()
         {
             U.Events.OnPlayerConnected -= OnPlayerConnected;
-            U.Events.OnPlayerDisconnected -= OnPlayerDisconnected;
-            AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerLeaveRegion -= OnPlayerLeaveRegion;
-            AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerEnterRegion -= OnPlayerEnterRegion;
+            ImperialPlugins.AdvancedRegions.AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerLeaveRegion -= OnPlayerLeaveRegion;
+            ImperialPlugins.AdvancedRegions.AdvancedRegionsPlugin.Instance.RegionsManager.OnPlayerEnterRegion -= OnPlayerEnterRegion;
             
-            StopCoroutine(nameof(UpdateCoroutine));
+            StopCoroutine(_updateCoroutine);
             
             Logger.Log("Kamiluk || Zones plugin has been unloaded.");
         }
 
         private IEnumerator UpdateCoroutine(float interval)
         {
-            foreach (Zone zone in Zones)
-                zone.Update(interval);
-            yield return new WaitForSeconds(interval);
+            while (true)
+            {
+                foreach (Zone zone in _zones)
+                    zone.Update(interval);
+                yield return new WaitForSeconds(interval);;
+            }
         }
 
-        private void OnPlayerEnterRegion(Region region, Player player)
+        private void OnPlayerEnterRegion(ImperialPlugins.AdvancedRegions.Region region, Player player)
         {
-            var zone = Zones.FirstOrDefault(x => x.ZoneInfo.RegionName == region.RegionInfo.Name);
+            var zone = _zones.FirstOrDefault(x => x.ZoneInfo.RegionName == region.RegionInfo.Name);
             
             if (zone == null)
                 return;
@@ -66,26 +74,21 @@ namespace Zones
             zone.OnPlayerEntered(player);
         }
 
-        private void OnPlayerLeaveRegion(Region region, Player player)
+        private void OnPlayerLeaveRegion(ImperialPlugins.AdvancedRegions.Region region, Player player)
         {
-            var zone = Zones.FirstOrDefault(x => x.ZoneInfo.RegionName == region.RegionInfo.Name);
-            
+            var zone = _zones.FirstOrDefault(x => x.ZoneInfo.RegionName == region.RegionInfo.Name);
+
             if (zone == null)
                 return;
 
             zone.OnPlayerLeft(player);
         }
 
-        private void OnPlayerDisconnected(UnturnedPlayer player)
-        {
-            throw new System.NotImplementedException();
-        }
-
         private void OnPlayerConnected(UnturnedPlayer player)
         {
             var quests = player.Player.quests;
             
-            foreach (var zone in Zones)
+            foreach (var zone in _zones)
             {
                 if (quests.groupID.m_SteamID == zone.ZoneInfo.GroupID)
                 {

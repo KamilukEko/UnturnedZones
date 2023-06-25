@@ -7,11 +7,13 @@ namespace Zones
     public class Config : IRocketPluginConfiguration
     {
         public float GlobalUpdateInterval;
+        public ushort ZoneAttackNotificationEffectID;
         public List<ZoneInfo> Zones;
 
         public void LoadDefaults()
         {
             GlobalUpdateInterval = 1.0f;
+            ZoneAttackNotificationEffectID = 56;
             
             Zones = new List<ZoneInfo>()
             {
@@ -23,7 +25,6 @@ namespace Zones
                     PayoutValue = 100,
                     MaxZonePoints = 6000,
                     ZonePointsPerUpdate = 100,
-                    Description = "Testowa strefa, daje trochę pieniędzy i jakąś flagę.",
                     MinHourActive = 10,
                     MaxHourActive = 24,
                     QuestFlags = new List<SerializablePlayerQuestFlag>()
